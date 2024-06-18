@@ -58,7 +58,7 @@ async def main():
             openai_api_key=os.environ.get("OPENAI_API_KEY"),
             gpt_api_endpoint=os.environ.get("GPT_API_ENDPOINT"),
             gpt_model=os.environ.get("GPT_MODEL"),
-            max_tokens=int(os.environ.get("MAX_TOKENS", 4000)),
+            max_tokens=int(os.environ.get("MAX_TOKENS", 15000)),
             top_p=float(os.environ.get("TOP_P", 1.0)),
             presence_penalty=float(os.environ.get("PRESENCE_PENALTY", 0.0)),
             frequency_penalty=float(os.environ.get("FREQUENCY_PENALTY", 0.0)),

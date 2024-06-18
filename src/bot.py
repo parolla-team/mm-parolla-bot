@@ -145,14 +145,9 @@ class Bot:
             temperature=self.temperature,
         )
 
-        # login relative info
-        if email is None and password is None:
-            raise ValueError("user email and password must be provided")
-
         self.driver = AsyncDriver(
             {
-                "login_id": email,
-                "password": password,
+                "token": os.getenv("TOKEN"), 
                 "url": server_url,
                 "port": self.port,
                 "request_timeout": self.timeout,
@@ -180,6 +175,7 @@ class Bot:
         self.bot_id = resp["id"]
 
     async def run(self) -> None:
+        logger.info("runnnnnnnnn")
         await self.driver.init_websocket(self.websocket_handler)
 
     # websocket handler
@@ -203,12 +199,52 @@ class Bot:
 
                 try:
                     asyncio.create_task(
-                        self.message_callback(
+                        self.message_callback_langchain(
                             raw_message, channel_id, user_id, sender_name, root_id
                         )
                     )
                 except Exception as e:
                     await self.send_message(channel_id, f"{e}", root_id)
+
+
+    async def message_callback_langchain(
+        self,
+        raw_message: str,
+        channel_id: str,
+        user_id: str,
+        sender_name: str,
+        root_id: str,
+    ) -> None:
+        if sender_name == self.username:
+            return
+        from langchain_groq import ChatGroq
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import StrOutputParser
+        from prompt import tutor_prompt_template
+        import os
+
+        model = ChatGroq(model="mixtral-8x7b-32768")
+        parser = StrOutputParser()
+
+        prompt_template = ChatPromptTemplate.from_messages([
+            ('system', tutor_prompt_template),
+            ('user', '{text}')
+        ])
+        chain = prompt_template | model | parser
+        try:
+            # sending typing state
+            await self.driver.users.publish_user_typing(
+                self.bot_id,
+                options={
+                    "channel_id": channel_id,
+                },
+            )
+            output = chain.invoke({"text": raw_message})
+            
+            await self.send_message(channel_id, output, root_id)
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            raise Exception(e)
 
     # message callback
     async def message_callback(

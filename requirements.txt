@@ -4,3 +4,5 @@ tiktoken
 tenacity
 aiofiles
 mattermostdriver @ git+https://github.com/hibobmaster/python-mattermost-driver
+langchain
+langchain-groq
