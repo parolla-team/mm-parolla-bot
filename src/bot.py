@@ -221,7 +221,7 @@ class Bot:
         try:
             asyncio.create_task(
                 self.message_callback_langchain(
-                    raw_message, channel_id, user_id, sender_name, root_id
+                    raw_message, channel_id, user_id, sender_name, root_id if len(members) != 2 else None
                 )
             )
         except Exception as e:
@@ -262,7 +262,7 @@ class Bot:
         channel_id: str,
         user_id: str,
         sender_name: str,
-        root_id: str,
+        root_id: str | None,
     ) -> None:
         if sender_name == self.username:
             return
@@ -284,7 +284,12 @@ class Bot:
                     "channel_id": channel_id,
                 },
             )
-            posts = await driver.posts.get_posts_for_channel(channel_id=channel_id)
+            if root_id is None:
+                posts = await driver.posts.get_posts_for_channel(channel_id=channel_id)
+            else:
+                posts = await driver.posts.get_post_thread(root_id, options={
+                    "perPage": 100
+                })
             output = chain.invoke({"text": raw_message, "chat_history": await self.compute_history(posts, user_id)})
 
             output = output.replace("parolla: ", "").replace("parolla:", "").replace("parolla", "")
