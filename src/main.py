@@ -7,6 +7,9 @@ import asyncio
 from pathlib import Path
 from log import getlogger
 
+from dotenv import load_dotenv
+
+load_dotenv() 
 logger = getlogger()
 
 

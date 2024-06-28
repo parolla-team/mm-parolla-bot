@@ -190,10 +190,8 @@ class Bot:
         if "event" not in response:
             return
         event_type = response["event"]
-        if event_type == "added_to_team" or event_type == "new_user" or event_type == "user_added":
-            print("--"*10)
-            print(response)
-            print("--"*10)
+        if event_type == "new_user":
+            await self.send_welcome_message(response["data"]["user_id"])
             return
         if event_type != "posted":
             return
@@ -214,7 +212,8 @@ class Bot:
         if user_id == self.bot_id:
             return
 
-        members = self.driver.channels.get_channel_members(channel_id)
+        members = await self.driver.channels.get_channel_members(channel_id)
+
         if not (self.username in raw_message or len(members) == 2):
             return
 
@@ -228,7 +227,7 @@ class Bot:
             await self.send_message(channel_id, f"{e}", root_id)
 
     async def send_welcome_message(self, user_id):
-        response = await self.driver.channels.create_direct_channel(user_id, self.bot_id)
+        response = await self.driver.channels.create_direct_channel(options=[user_id, self.bot_id])
         new_channel_id = response["id"]
 
         await self.send_message(new_channel_id, WELCOME_MESSAGE)
@@ -240,7 +239,7 @@ class Bot:
             p = posts["posts"][post_id]
             
             username = await self.driver.users.get_user(user_id=p["user_id"])
-            message_text = f"{username['username']}: {p["message"]}\n\n"
+            message_text = f"{username['username']}: {p['message']}\n\n"
             if len(message_text) > TOKEN_THRESHOLD_USER_MESSAGE:
                 message_text = "Message too long truncated: " + message_text[:TOKEN_THRESHOLD_USER_MESSAGE/2] + "..."
                 continue
@@ -251,7 +250,7 @@ class Bot:
             current_character_count += len(message[1])
             if current_character_count > TOKEN_THRESHOLD_HISTORY:
                 break
-            history_messages.append(("user" if p["user_id"] == user_id else "assistant", f"{username['username']}: {p["message"]}\n\n"))
+            history_messages.append(message)
 
         return list(reversed(history_messages))
 
@@ -285,12 +284,14 @@ class Bot:
                 },
             )
             if root_id is None:
-                posts = await driver.posts.get_posts_for_channel(channel_id=channel_id)
+                posts = await self.driver.posts.get_posts_for_channel(channel_id=channel_id)
             else:
-                posts = await driver.posts.get_post_thread(root_id, options={
+                posts = await self.driver.posts.get_post_thread(root_id, params={
                     "perPage": 100
                 })
-            output = chain.invoke({"text": raw_message, "chat_history": await self.compute_history(posts, user_id)})
+            history = await self.compute_history(posts, user_id)
+            print(history)
+            output = chain.invoke({"text": raw_message, "chat_history": history})
 
             output = output.replace("parolla: ", "").replace("parolla:", "").replace("parolla", "")
             await self.send_message(channel_id, output, root_id)
