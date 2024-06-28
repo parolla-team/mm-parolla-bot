@@ -3,6 +3,8 @@ Pillow
 tiktoken
 tenacity
 aiofiles
-mattermostdriver @ git+https://github.com/hibobmaster/python-mattermost-driver
+mattermostautodriver
 langchain
 langchain-groq
+langchain-openai
+python-dotenv

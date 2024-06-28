@@ -1,6 +1,6 @@
 import sys
 import aiofiles.os
-from mattermostdriver import AsyncDriver
+from mattermostautodriver import AsyncDriver
 from typing import Optional
 import json
 import asyncio
@@ -11,7 +11,14 @@ from gptbot import Chatbot
 from log import getlogger
 import httpx
 import imagegen
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from prompt import tutor_prompt_template, WELCOME_MESSAGE
 
+TOKEN_THRESHOLD_HISTORY = 50000
+TOKEN_THRESHOLD_USER_MESSAGE = 10000
 logger = getlogger()
 
 
@@ -20,8 +27,6 @@ class Bot:
         self,
         server_url: str,
         username: str,
-        email: str,
-        password: str,
         port: Optional[int] = 443,
         scheme: Optional[str] = "https",
         openai_api_key: Optional[str] = None,
@@ -182,29 +187,72 @@ class Bot:
     async def websocket_handler(self, message) -> None:
         logger.info(message)
         response = json.loads(message)
-        if "event" in response:
-            event_type = response["event"]
-            if event_type == "posted":
-                raw_data = response["data"]["post"]
-                raw_data_dict = json.loads(raw_data)
-                user_id = raw_data_dict["user_id"]
-                root_id = (
-                    raw_data_dict["root_id"]
-                    if raw_data_dict["root_id"]
-                    else raw_data_dict["id"]
-                )
-                channel_id = raw_data_dict["channel_id"]
-                sender_name = response["data"]["sender_name"]
-                raw_message = raw_data_dict["message"]
+        if "event" not in response:
+            return
+        event_type = response["event"]
+        if event_type == "new_user":
+            await self.send_welcome_message(response["data"]["user_id"])
+            return
+        if event_type != "posted":
+            return
 
-                try:
-                    asyncio.create_task(
-                        self.message_callback_langchain(
-                            raw_message, channel_id, user_id, sender_name, root_id
-                        )
-                    )
-                except Exception as e:
-                    await self.send_message(channel_id, f"{e}", root_id)
+
+        raw_data = response["data"]["post"]
+        raw_data_dict = json.loads(raw_data)
+        user_id = raw_data_dict["user_id"]
+        root_id = (
+            raw_data_dict["root_id"]
+            if raw_data_dict["root_id"]
+            else raw_data_dict["id"]
+        )
+        channel_id = raw_data_dict["channel_id"]
+        sender_name = response["data"]["sender_name"]
+        raw_message = raw_data_dict["message"]
+
+        if user_id == self.bot_id:
+            return
+
+        members = await self.driver.channels.get_channel_members(channel_id)
+
+        if not (self.username in raw_message or len(members) == 2):
+            return
+
+        try:
+            asyncio.create_task(
+                self.message_callback_langchain(
+                    raw_message, channel_id, user_id, sender_name, root_id if len(members) != 2 else None
+                )
+            )
+        except Exception as e:
+            await self.send_message(channel_id, f"{e}", root_id)
+
+    async def send_welcome_message(self, user_id):
+        response = await self.driver.channels.create_direct_channel(options=[user_id, self.bot_id])
+        new_channel_id = response["id"]
+
+        await self.send_message(new_channel_id, WELCOME_MESSAGE)
+
+    async def compute_history(self, posts, user_id):
+        history_messages = []
+        current_character_count = 0
+        for post_id in posts["order"]:
+            p = posts["posts"][post_id]
+            
+            username = await self.driver.users.get_user(user_id=p["user_id"])
+            message_text = f"{username['username']}: {p['message']}\n\n"
+            if len(message_text) > TOKEN_THRESHOLD_USER_MESSAGE:
+                message_text = "Message too long truncated: " + message_text[:TOKEN_THRESHOLD_USER_MESSAGE/2] + "..."
+                continue
+            message = (
+                "user" if p["user_id"] == user_id else "assistant",
+                message_text
+            )
+            current_character_count += len(message[1])
+            if current_character_count > TOKEN_THRESHOLD_HISTORY:
+                break
+            history_messages.append(message)
+
+        return list(reversed(history_messages))
 
 
     async def message_callback_langchain(
@@ -213,22 +261,18 @@ class Bot:
         channel_id: str,
         user_id: str,
         sender_name: str,
-        root_id: str,
+        root_id: str | None,
     ) -> None:
         if sender_name == self.username:
             return
-        from langchain_groq import ChatGroq
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_core.output_parsers import StrOutputParser
-        from prompt import tutor_prompt_template
-        import os
 
-        model = ChatGroq(model="mixtral-8x7b-32768")
+        model = ChatOpenAI(model="gpt-4o", temperature=0)
         parser = StrOutputParser()
 
         prompt_template = ChatPromptTemplate.from_messages([
             ('system', tutor_prompt_template),
-            ('user', '{text}')
+            MessagesPlaceholder(variable_name="chat_history"),
+            ('user', sender_name + ': {text}')
         ])
         chain = prompt_template | model | parser
         try:
@@ -239,138 +283,29 @@ class Bot:
                     "channel_id": channel_id,
                 },
             )
-            output = chain.invoke({"text": raw_message})
-            
+            if root_id is None:
+                posts = await self.driver.posts.get_posts_for_channel(channel_id=channel_id)
+            else:
+                posts = await self.driver.posts.get_post_thread(root_id, params={
+                    "perPage": 100
+                })
+            history = await self.compute_history(posts, user_id)
+            print(history)
+            output = chain.invoke({"text": raw_message, "chat_history": history})
+
+            output = output.replace("parolla: ", "").replace("parolla:", "").replace("parolla", "")
             await self.send_message(channel_id, output, root_id)
         except Exception as e:
             logger.error(e, exc_info=True)
             raise Exception(e)
 
-    # message callback
-    async def message_callback(
-        self,
-        raw_message: str,
-        channel_id: str,
-        user_id: str,
-        sender_name: str,
-        root_id: str,
-    ) -> None:
-        # prevent command trigger loop
-        if sender_name != self.username:
-            message = raw_message
-
-            if (
-                self.openai_api_key is not None
-                or self.gpt_api_endpoint != "https://api.openai.com/v1/chat/completions"
-            ):
-                # !gpt command trigger handler
-                if self.gpt_prog.match(message):
-                    prompt = self.gpt_prog.match(message).group(1)
-                    try:
-                        # sending typing state
-                        await self.driver.users.publish_user_typing(
-                            self.bot_id,
-                            options={
-                                "channel_id": channel_id,
-                            },
-                        )
-                        response = await self.chatbot.oneTimeAsk(prompt)
-                        await self.send_message(channel_id, f"{response}", root_id)
-                    except Exception as e:
-                        logger.error(e, exc_info=True)
-                        raise Exception(e)
-
-                # !chat command trigger handler
-                elif self.chat_prog.match(message):
-                    prompt = self.chat_prog.match(message).group(1)
-                    try:
-                        # sending typing state
-                        await self.driver.users.publish_user_typing(
-                            self.bot_id,
-                            options={
-                                "channel_id": channel_id,
-                            },
-                        )
-                        response = await self.chatbot.ask_async_v2(
-                            prompt=prompt, convo_id=user_id
-                        )
-                        await self.send_message(channel_id, f"{response}", root_id)
-                    except Exception as e:
-                        logger.error(e, exc_info=True)
-                        raise Exception(e)
-
-            # !new command trigger handler
-            if self.new_prog.match(message):
-                self.chatbot.reset(convo_id=user_id)
-                try:
-                    await self.send_message(
-                        channel_id,
-                        "New conversation created, "
-                        + "please use !chat to start chatting!",
-                        root_id,
-                    )
-                except Exception as e:
-                    logger.error(e, exc_info=True)
-                    raise Exception(e)
-
-            # !pic command trigger handler
-            if self.image_generation_endpoint and self.image_generation_backend:
-                if self.pic_prog.match(message):
-                    prompt = self.pic_prog.match(message).group(1)
-                    # generate image
-                    try:
-                        # sending typing state
-                        await self.driver.users.publish_user_typing(
-                            self.bot_id,
-                            options={
-                                "channel_id": channel_id,
-                            },
-                        )
-                        image_path_list = await imagegen.get_images(
-                            self.httpx_client,
-                            self.image_generation_endpoint,
-                            prompt,
-                            self.image_generation_backend,
-                            timeount=self.timeout,
-                            api_key=self.openai_api_key,
-                            output_path=self.base_path / "images",
-                            n=1,
-                            size=self.image_generation_size,
-                            width=self.image_generation_width,
-                            height=self.image_generation_height,
-                            steps=self.sdwui_steps,
-                            sampler_name=self.sdwui_sampler_name,
-                            cfg_scale=self.sdwui_cfg_scale,
-                            image_format=self.image_format,
-                        )
-                        # send image
-                        for image_path in image_path_list:
-                            await self.send_file(
-                                channel_id,
-                                f"{prompt}",
-                                image_path,
-                                root_id,
-                            )
-                            await aiofiles.os.remove(image_path)
-                    except Exception as e:
-                        logger.error(e, exc_info=True)
-                        raise Exception(e)
-
-            # !help command trigger handler
-            if self.help_prog.match(message):
-                try:
-                    await self.send_message(channel_id, self.help(), root_id)
-                except Exception as e:
-                    logger.error(e, exc_info=True)
-
     # send message to room
-    async def send_message(self, channel_id: str, message: str, root_id: str) -> None:
+    async def send_message(self, channel_id: str, message: str, root_id: str | None = None) -> None:
+        options = {"channel_id": channel_id,"message": message,}
+        if root_id:
+            options["root_id"] = root_id
         await self.driver.posts.create_post(
-            options={
-                "channel_id": channel_id,
-                "message": message,
-                "root_id": root_id,
-            }
+            options=options
         )
 
     # send file to room

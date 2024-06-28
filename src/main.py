@@ -7,6 +7,9 @@ import asyncio
 from pathlib import Path
 from log import getlogger
 
+from dotenv import load_dotenv
+
+load_dotenv() 
 logger = getlogger()
 
 
@@ -22,8 +25,6 @@ async def main():
 
         mattermost_bot = Bot(
             server_url=config.get("server_url"),
-            email=config.get("email"),
-            password=config.get("password"),
             username=config.get("username"),
             port=config.get("port"),
             scheme=config.get("scheme"),
@@ -50,8 +51,6 @@ async def main():
     else:
         mattermost_bot = Bot(
             server_url=os.environ.get("SERVER_URL"),
-            email=os.environ.get("EMAIL"),
-            password=os.environ.get("PASSWORD"),
             username=os.environ.get("USERNAME"),
             port=int(os.environ.get("PORT", 443)),
             scheme=os.environ.get("SCHEME"),
