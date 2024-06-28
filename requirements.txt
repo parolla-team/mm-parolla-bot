@@ -7,3 +7,4 @@ mattermostautodriver
 langchain
 langchain-groq
 langchain-openai
+python-dotenv
