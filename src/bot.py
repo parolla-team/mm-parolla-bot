@@ -353,7 +353,7 @@ class Bot:
                 )
                 return
             headers = {
-                "Authorization": f"Bearer {os.environ.get("HF_TOKEN")}",
+                "Authorization": f"""Bearer {os.environ.get("HF_TOKEN")}""",
                 "Content-Type": "application/json",
             }
             payload = {
