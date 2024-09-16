@@ -16,6 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.prompts import MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from prompt import tutor_prompt_template, WELCOME_MESSAGE
+import requests
 
 TOKEN_THRESHOLD_HISTORY = 50000
 TOKEN_THRESHOLD_USER_MESSAGE = 10000
@@ -152,7 +153,7 @@ class Bot:
 
         self.driver = AsyncDriver(
             {
-                "token": os.getenv("TOKEN"), 
+                "token": os.getenv("TOKEN"),
                 "url": server_url,
                 "port": self.port,
                 "request_timeout": self.timeout,
@@ -196,7 +197,6 @@ class Bot:
         if event_type != "posted":
             return
 
-
         raw_data = response["data"]["post"]
         raw_data_dict = json.loads(raw_data)
         user_id = raw_data_dict["user_id"]
@@ -218,16 +218,25 @@ class Bot:
             return
 
         try:
+            function_to_execute = self.message_callback_langchain
+            if "!traduire-en-corse" in raw_message or "!traduire-en-francais" in raw_message:
+                function_to_execute = self.message_callback_traducteur
             asyncio.create_task(
-                self.message_callback_langchain(
-                    raw_message, channel_id, user_id, sender_name, root_id if len(members) != 2 else None
+                function_to_execute(
+                    raw_message,
+                    channel_id,
+                    user_id,
+                    sender_name,
+                    root_id if len(members) != 2 else None,
                 )
             )
         except Exception as e:
             await self.send_message(channel_id, f"{e}", root_id)
 
     async def send_welcome_message(self, user_id):
-        response = await self.driver.channels.create_direct_channel(options=[user_id, self.bot_id])
+        response = await self.driver.channels.create_direct_channel(
+            options=[user_id, self.bot_id]
+        )
         new_channel_id = response["id"]
 
         await self.send_message(new_channel_id, WELCOME_MESSAGE)
@@ -237,23 +246,23 @@ class Bot:
         current_character_count = 0
         for post_id in posts["order"]:
             p = posts["posts"][post_id]
-            
+
             username = await self.driver.users.get_user(user_id=p["user_id"])
             message_text = f"{username['username']}: {p['message']}\n\n"
             if len(message_text) > TOKEN_THRESHOLD_USER_MESSAGE:
-                message_text = "Message too long truncated: " + message_text[:TOKEN_THRESHOLD_USER_MESSAGE/2] + "..."
+                message_text = (
+                    "Message trop long version courte:"
+                    + message_text[: TOKEN_THRESHOLD_USER_MESSAGE / 2]
+                    + "..."
+                )
                 continue
-            message = (
-                "user" if p["user_id"] == user_id else "assistant",
-                message_text
-            )
+            message = ("user" if p["user_id"] == user_id else "assistant", message_text)
             current_character_count += len(message[1])
             if current_character_count > TOKEN_THRESHOLD_HISTORY:
                 break
             history_messages.append(message)
 
         return list(reversed(history_messages))
-
 
     async def message_callback_langchain(
         self,
@@ -269,11 +278,13 @@ class Bot:
         model = ChatOpenAI(model="gpt-4o", temperature=0)
         parser = StrOutputParser()
 
-        prompt_template = ChatPromptTemplate.from_messages([
-            ('system', tutor_prompt_template),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ('user', sender_name + ': {text}')
-        ])
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", tutor_prompt_template),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("user", sender_name + ": {text}"),
+            ]
+        )
         chain = prompt_template | model | parser
         try:
             # sending typing state
@@ -284,29 +295,116 @@ class Bot:
                 },
             )
             if root_id is None:
-                posts = await self.driver.posts.get_posts_for_channel(channel_id=channel_id)
+                posts = await self.driver.posts.get_posts_for_channel(
+                    channel_id=channel_id
+                )
             else:
-                posts = await self.driver.posts.get_post_thread(root_id, params={
-                    "perPage": 100
-                })
+                posts = await self.driver.posts.get_post_thread(
+                    root_id, params={"perPage": 100}
+                )
             history = await self.compute_history(posts, user_id)
             print(history)
             output = chain.invoke({"text": raw_message, "chat_history": history})
 
-            output = output.replace("parolla: ", "").replace("parolla:", "").replace("parolla", "")
+            output = (
+                output.replace("parolla: ", "")
+                .replace("parolla:", "")
+                .replace("parolla", "")
+            )
             await self.send_message(channel_id, output, root_id)
         except Exception as e:
             logger.error(e, exc_info=True)
             raise Exception(e)
 
+    async def message_callback_traducteur(
+        self,
+        raw_message: str,
+        channel_id: str,
+        user_id: str,
+        sender_name: str,
+        root_id: str | None,
+        retry: bool = False,
+    ) -> None:
+        try:
+            # sending typing state
+            await self.driver.users.publish_user_typing(
+                self.bot_id,
+                options={
+                    "channel_id": channel_id,
+                },
+            )
+
+            tgt_lang = None
+            src_lang = None
+            if "!traduire-en-corse" in raw_message:
+                tgt_lang = "cor_Latn"
+                src_lang = "fra_Latn"
+            elif "!traduire-en-francais" in raw_message:
+                tgt_lang = "fra_Latn"
+                src_lang = "cor_Latn"
+            raw_message_clean = raw_message.replace("!traduire-en-corse", "").replace(
+                "!traduire-en-francais", ""
+            )
+            if raw_message_clean == "" or tgt_lang is None or src_lang is None:
+                await self.send_message(
+                    channel_id,
+                    "Veuillez utiliser la commande !traduire-en-corse ou !traduire-en-francais et saisir le texte que vous souhaitez traduire",
+                    root_id,
+                )
+                return
+            headers = {
+                "Authorization": f"Bearer {os.environ.get("HF_TOKEN")}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "inputs": raw_message_clean.strip(),
+                "parameters": {"src_lang": src_lang, "tgt_lang": tgt_lang},
+            }
+            response = requests.post(
+                os.environ.get("HF_API_URL"), headers=headers, json=payload
+            )
+            data = response.json()
+            if response.status_code == 503:
+                if retry:
+                    await self.send_message(
+                        channel_id,
+                        "Une erreur est survenue. Veuillez essayer une autre phrase. Si le probleme persiste, contactez le support.",
+                        root_id,
+                    )
+                    return
+                await asyncio.sleep(30)
+                await self.message_callback_traducteur(
+                    raw_message, channel_id, user_id, sender_name, root_id, retry=True
+                )
+                return
+            if not data:
+                await self.send_message(
+                    channel_id,
+                    "La phrase n'a pas pu être traduite. Veuillez essayer une autre phrase. Si le probleme persiste, contactez le support.",
+                    root_id,
+                )
+                return
+            await self.send_message(
+                channel_id,
+                data[0]
+                + "\n\n> Le traducteur Parolla peut faire des erreurs. Envisagez de vérifier les traductions à l'aide d'un dictionnaire.",
+                root_id,
+            )
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            raise Exception(e)
+
     # send message to room
-    async def send_message(self, channel_id: str, message: str, root_id: str | None = None) -> None:
-        options = {"channel_id": channel_id,"message": message,}
+    async def send_message(
+        self, channel_id: str, message: str, root_id: str | None = None
+    ) -> None:
+        options = {
+            "channel_id": channel_id,
+            "message": message,
+        }
         if root_id:
             options["root_id"] = root_id
-        await self.driver.posts.create_post(
-            options=options
-        )
+        await self.driver.posts.create_post(options=options)
 
     # send file to room
     async def send_file(
