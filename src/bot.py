@@ -365,14 +365,14 @@ class Bot:
             )
             data = response.json()
             if response.status_code == 503:
-                if retry:
-                    await self.send_message(
-                        channel_id,
-                        "Une erreur est survenue. Veuillez essayer une autre phrase. Si le probleme persiste, contactez le support.",
-                        root_id,
-                    )
-                    return
-                await asyncio.sleep(30)
+
+                await self.send_message(
+                    channel_id,
+                    "Le server est en cours de démarage, cela peut prendre plus de 2 minutes. Veuillez patienter, si le probleme persiste, contactez le support.",
+                    root_id,
+                )
+
+                await asyncio.sleep(150)
                 await self.message_callback_traducteur(
                     raw_message, channel_id, user_id, sender_name, root_id, retry=True
                 )
@@ -386,8 +386,8 @@ class Bot:
                 return
             await self.send_message(
                 channel_id,
-                data[0]
-                + "\n\n> Le traducteur Parolla peut faire des erreurs. Envisagez de vérifier les traductions à l'aide d'un dictionnaire.",
+                "Traduction: " + data[0]
+                + "\n----\n> _Parolla peut faire des erreurs. Vérifiez avec un dictionnaire et notez avec un emoji 👍 ou 👎 pour aider à l'améliorer._",
                 root_id,
             )
         except Exception as e:
