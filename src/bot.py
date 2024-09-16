@@ -386,8 +386,8 @@ class Bot:
                 return
             await self.send_message(
                 channel_id,
-                "Traduction: " + data[0]
-                + "\n----\n> _Parolla peut faire des erreurs. Vérifiez avec un dictionnaire et notez avec un emoji 👍 ou 👎 pour aider à l'améliorer._",
+                "Traduction: **" + data[0]
+                + "**\n\n----\n\n> _Parolla peut faire des erreurs. Vérifiez avec un dictionnaire et notez avec un emoji 👍 ou 👎 pour aider à l'améliorer._",
                 root_id,
             )
         except Exception as e:
